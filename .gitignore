@@ -4,3 +4,33 @@
 *.ptx
 *.cubin
 *.fatbin
+
+# Executable files
+*.exe
+a.out
+main
+program
+
+# Object files
+*.o
+*.obj
+
+# Build directories
+build/
+bin/
+
+PRSProjekat2/
+x64/
+
+# Temporary/Debug Files
+*.pdb
+*.ilk
+
+# Visual Studio Code
+.vscode/
+
+# Visual Studio
+*.vcxproj.user
+*.suo
+.vs/
+**/x64/

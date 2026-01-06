@@ -1,0 +1,8 @@
+<Solution>
+  <Configurations>
+    <BuildType Name="Release" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="PRSProjekat2.vcxproj" Id="13786a3a-fe39-4fd6-917d-f166e76df950" />
+</Solution>
