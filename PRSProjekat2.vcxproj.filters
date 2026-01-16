@@ -18,5 +18,18 @@
     <CudaCompile Include="main.cu">
       <Filter>Source Files</Filter>
     </CudaCompile>
+    <CudaCompile Include="householder.cu">
+      <Filter>Source Files</Filter>
+    </CudaCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="base.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="householder.cuh">
+      <Filter>Header Files</Filter>
+    </None>
   </ItemGroup>
 </Project>

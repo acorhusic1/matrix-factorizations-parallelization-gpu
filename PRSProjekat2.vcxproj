@@ -125,6 +125,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>cublas.lib;cusolver.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <CudaLink>
       <Optimization>O3</Optimization>
@@ -133,12 +134,20 @@
       <AdditionalCompilerOptions>
       </AdditionalCompilerOptions>
       <CodeGeneration>compute_86,sm_86</CodeGeneration>
+      <Include>$(CudaToolkitIncludeDir);%(Include)</Include>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <CudaCompile Include="householder.cu" />
     <CudaCompile Include="main.cu">
       <FileType>Document</FileType>
     </CudaCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="base.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="householder.cuh" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
