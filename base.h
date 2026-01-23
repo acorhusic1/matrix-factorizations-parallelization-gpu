@@ -6,11 +6,11 @@
 #include <iostream>
 #include <iomanip>
 #include <string>
+#include <cstring>
+#include <cmath>
 
-// Makro za CUDA greske
 #define checkCudaErrors(val) check_cuda((val), #val, __FILE__, __LINE__)
 
-// Static inline omogucava da funkcija postoji u svakom fajlu koji je ukljuci, a da se pritom linker nece buniti
 static inline void check_cuda(cudaError_t result, const char* func, const char* file, int line) {
     if (result != cudaSuccess) {
         std::cerr << "CUDA Error at " << file << ":" << line << " code=" << result << " \"" << func << "\" \n";
@@ -19,14 +19,11 @@ static inline void check_cuda(cudaError_t result, const char* func, const char* 
     }
 }
 
-// ============================================================================
-// BASE MATRIX CLASS (HOST + DEVICE BRIDGE)
-// ============================================================================
 class GPUMatrix {
 public:
     int m, n;
-    float* h_data; // Podaci na CPU
-    float* d_data; // Podaci na GPU
+    float* h_data;
+    float* d_data;
     bool on_device;
 
     GPUMatrix(int rows, int cols) : m(rows), n(cols), on_device(false) {
@@ -35,7 +32,6 @@ public:
         checkCudaErrors(cudaMalloc(&d_data, m * n * sizeof(float)));
     }
 
-    // Copy constructor (duboka kopija)
     GPUMatrix(const GPUMatrix& other) : m(other.m), n(other.n), on_device(false) {
         h_data = new float[m * n];
         std::memcpy(h_data, other.h_data, m * n * sizeof(float));
@@ -44,26 +40,22 @@ public:
     }
 
     ~GPUMatrix() {
-        delete[] h_data;
-        cudaFree(d_data);
+        if (h_data) delete[] h_data;
+        if (d_data) cudaFree(d_data);
     }
 
-    // Dodaj ovaj operator dodjele (Assignment Operator)
     GPUMatrix& operator=(const GPUMatrix& other) {
         if (this != &other) {
-            // Prvo oslobodi staru memoriju
             if (h_data) delete[] h_data;
             if (d_data) cudaFree(d_data);
 
             m = other.m;
             n = other.n;
 
-            // Alociraj novu memoriju i kopiraj podatke sa Host-a
             h_data = new float[m * n];
             std::memcpy(h_data, other.h_data, m * n * sizeof(float));
             checkCudaErrors(cudaMalloc(&d_data, m * n * sizeof(float)));
 
-            // Ako je original bio na device-u, kopiraj i tamo
             if (other.on_device) {
                 this->CopyToDevice();
             }
@@ -74,7 +66,6 @@ public:
         return *this;
     }
 
-    // Column-Major indeksiranje
     float& operator()(int i, int j) { return h_data[j * m + i]; }
     const float& operator()(int i, int j) const { return h_data[j * m + i]; }
 
@@ -111,19 +102,12 @@ public:
     }
 
     static bool isEqual(const GPUMatrix& A, const GPUMatrix& B, float eps = 1e-3) {
-        if (A.m != B.m || A.n != B.n) {
-            std::cerr << "Matrix dimensions do not match for equality check!" << std::endl;
-            exit(EXIT_FAILURE);
-        }
-
+        if (A.m != B.m || A.n != B.n) return false;
         for (int i = 0; i < A.m * A.n; i++) {
-            if (std::fabs(A.h_data[i] - B.h_data[i]) > eps)
-				return false;
+            if (std::fabs(A.h_data[i] - B.h_data[i]) > eps) return false;
         }
-
         return true;
     }
-
 };
 
 #endif

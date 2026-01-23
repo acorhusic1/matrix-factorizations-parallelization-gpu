@@ -2,20 +2,23 @@
 #ifndef HOUSEHOLDER_H
 #define HOUSEHOLDER_H
 
-#include "base.h" // GPUMatrix klasa
+#include "base.h"
+#include <vector>
 
 namespace Householder {
 
-    // Kernel 1: Update Pivot Element
-    // Racuna normu pivot reda i azurira pivot element.
-    __global__ void updatePivotKernel(float* matrix, int pivotRow, int numCols, int ld);
+    /*
+     * A        Matrix to factorize (in-place).
+     *          Output: Upper triangle is R. Strict lower triangle contains v[1:m].
+     * h_tau    Host vector to store tau factors (needed for Q extraction).
+     */
+    void qr_decomposition(GPUMatrix& A, std::vector<float>& h_tau);
 
-    // Kernel 2: Update Matrix
-    // Azurira ostale redove na osnovu pivot reda.
-    __global__ void updateMatrixKernel(float* matrix, int pivotRow, int numRows, int numCols, int ld, int startRow);
+    // Reconstruct Q from the compressed Householder vectors and Tau factors.
+    void extract_Q(const GPUMatrix& A, const std::vector<float>& h_tau, GPUMatrix& Q);
 
-    // Glavna Host funkcija koja implementira Stream logiku
-    void qr_decomposition(GPUMatrix& A);
+    // Extract R matrix from factorized form.
+    void extract_R(const GPUMatrix& A, GPUMatrix& R);
 
 }
 
