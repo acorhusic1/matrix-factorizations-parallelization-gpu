@@ -19,7 +19,7 @@ int main() {
     cublasHandle_t blas_handle;
     checkCudaErrors((cudaError_t)cusolverDnCreate(&solver_handle));
     checkCudaErrors((cudaError_t)cublasCreate(&blas_handle));
-
+/*
     // ====================================================================
     // TEST 1: DEBUG USING 3x3 MATRIX
     // ====================================================================
@@ -55,6 +55,8 @@ int main() {
 
         // QR Factorization
         checkCudaErrors((cudaError_t)cusolverDnSgeqrf(solver_handle, m, n, A_lib.d_data, m, d_tau, d_work, work_size, devInfo));
+
+        A_lib.CopyToHost();
 
         // Extracting R
         Householder::extract_R(A_lib, R);
@@ -123,7 +125,7 @@ int main() {
         std::cout << std::endl << "Custom Householder Status: " << (pass_cust ? "PASS" : "FAIL") << std::endl;
         if (!pass_cust) res_cust.Print("Rezultat Q*R (Custom Householder Error)");
     }
-
+*/
 
     // ====================================================================
     // TEST 2: PERFORMANCE COMPARISON (SAME MATRIX PER ITERATION)
@@ -131,7 +133,7 @@ int main() {
     {
         const int M = 2000;
         const int N = 2000;
-        const int TEST_RUNS = 5;
+        const int TEST_RUNS = 100;
 
         std::cout << "\n------------------------------------------------------------\n";
         std::cout << "  GPU QR PERFORMANCE COMPARISON \n";
