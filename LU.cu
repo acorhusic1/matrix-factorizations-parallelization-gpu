@@ -1,7 +1,9 @@
 %%writefile LU.cu
 
+// ===================== LU.cu =====================
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
+#include <cusolverDn.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -22,11 +24,19 @@ static void check_cuda(cudaError_t result, const char* func, const char* file, i
     }
 }
 
-
 #define checkCublasErrors(val) check_cublas((val), #val, __FILE__, __LINE__)
 static void check_cublas(cublasStatus_t stat, const char* func, const char* file, int line) {
     if (stat != CUBLAS_STATUS_SUCCESS) {
         std::cerr << "cuBLAS Error at " << file << ":" << line
+                  << " status=" << (int)stat << " \"" << func << "\"\n";
+        std::exit(EXIT_FAILURE);
+    }
+}
+
+#define checkCusolverErrors(val) check_cusolver((val), #val, __FILE__, __LINE__)
+static void check_cusolver(cusolverStatus_t stat, const char* func, const char* file, int line) {
+    if (stat != CUSOLVER_STATUS_SUCCESS) {
+        std::cerr << "cuSOLVER Error at " << file << ":" << line
                   << " status=" << (int)stat << " \"" << func << "\"\n";
         std::exit(EXIT_FAILURE);
     }
@@ -37,10 +47,6 @@ static void check_cublas(cublasStatus_t stat, const char* func, const char* file
 //                            POMOĆNE FUNKCIJE
 // ============================================================================
 
-/**
- * Pravi determinističku test-matricu A (row-major) sa jakom dijagonalom (1e6),
- * da LU bez pivotiranja bude numerički stabilan i da provjera bude jasna.
- */
 static std::vector<real> make_test_matrix(int n) {
     std::vector<real> A((size_t)n * (size_t)n, 0.0);
     for (int i = 0; i < n; ++i)
@@ -49,11 +55,6 @@ static std::vector<real> make_test_matrix(int n) {
     return A;
 }
 
-
-/**
- * Mjeri vrijeme izvršavanja jedne LU funkcije na GPU koristeći CUDA evente
- * (mjeri samo GPU dio između start/stop, sa sync na kraju).
- */
 static float time_one_run_ms(void (*lu_func)(const real*, real*, real*, int),
                              const real* dA, real* dL, real* dU, int n) {
     cudaEvent_t start, stop;
@@ -69,12 +70,6 @@ static float time_one_run_ms(void (*lu_func)(const real*, real*, real*, int),
     checkCudaErrors(cudaEventDestroy(stop));
     return ms;
 }
-
-
-/**
- * Tiled GPU matmul (row-major): računa C = A*B koristeći shared memory pločice TILExTILE,
- * da se provjera A=L*U radi brzo na GPU.
- */
 
 #ifndef TILE
 #define TILE 16
@@ -113,12 +108,7 @@ __global__ void k_matmul_rm(const real* A, const real* B, real* C, int n) {
         C[(size_t)row * n + col] = sum;
 }
 
-
-/**
- * Atomic max za double (CAS varijanta): omogućava da mnogo threadova sigurno
- * “glasaju” za najveću grešku (max abs diff) u jednoj globalnoj varijabli.
- */
- __device__ inline double atomicMaxDouble(double* addr, double val) {
+__device__ inline double atomicMaxDouble(double* addr, double val) {
     unsigned long long* a = (unsigned long long*)addr;
     unsigned long long old = *a, assumed;
     while (true) {
@@ -131,11 +121,6 @@ __global__ void k_matmul_rm(const real* A, const real* B, real* C, int n) {
     return __longlong_as_double(old);
 }
 
-
-/**
- * Računa max|A-B| nad linearnim nizom dužine 'total' i upisuje rezultat u dMax.
- * Svaki thread obrađuje više elemenata (striding).
- */
 __global__ void k_max_abs_diff_linear(const real* A, const real* B, size_t total, double* dMax) {
     int idx = (int)blockIdx.x * (int)blockDim.x + (int)threadIdx.x;
     for (size_t t = (size_t)idx; t < total; t += (size_t)blockDim.x * (size_t)gridDim.x) {
@@ -144,11 +129,6 @@ __global__ void k_max_abs_diff_linear(const real* A, const real* B, size_t total
     }
 }
 
-
-/**
- * GPU provjera za row-major: prvo izračuna LU = L*U na GPU, zatim izračuna max|A-LU|
- * takođe na GPU, i vrati grešku kao double na host.
- */
 static double max_abs_diff_gpu_rm(const real* dA_rm, const real* dL_rm, const real* dU_rm, int n) {
     size_t total = (size_t)n * (size_t)n;
 
@@ -181,16 +161,10 @@ static double max_abs_diff_gpu_rm(const real* dA_rm, const real* dL_rm, const re
 }
 
 
-
-
 // ============================================================================
 //                          NAIVNA IMPLEMENTACIJA
 // ============================================================================
 
-/**
- * Nuluje (inicijalizuje) matrice L i U na GPU: L=0, U=0 (row-major).
- * Radi paralelno preko svih n*n elemenata.
- */
 __global__ void k_zero_LU(real* L, real* U, int n) {
     int idx = (int)blockIdx.x * (int)blockDim.x + (int)threadIdx.x;
     size_t total = (size_t)n * (size_t)n;
@@ -200,11 +174,6 @@ __global__ void k_zero_LU(real* L, real* U, int n) {
     }
 }
 
-
-/**
- * Računa k-ti red matrice U(bez pivotiranja) u row-major formatu.
- * Svaki thread računa više kolona j>=k: U[k,j] = A[k,j] - sum_{p=0..k-1} L[k,p]*U[p,j].
- */
 __global__ void k_U_row(const real* A, const real* L, const real* U, real* Uout, int n, int k) {
     int tid = (int)blockIdx.x * (int)blockDim.x + (int)threadIdx.x;
     for (int j = tid; j < n; j += (int)blockDim.x * (int)gridDim.x) {
@@ -215,11 +184,6 @@ __global__ void k_U_row(const real* A, const real* L, const real* U, real* Uout,
     }
 }
 
-
-/**
- * Računa k-tu kolonu matrice L(bez pivotiranja) u row-major formatu.
- * Postavlja L[k,k]=1, a za i>k: L[i,k] = (A[i,k] - sum_{p=0..k-1} L[i,p]*U[p,k]) / U[k,k].
- */
 __global__ void k_L_col(const real* A, const real* U, real* Lout, int n, int k) {
     int tid = (int)blockIdx.x * (int)blockDim.x + (int)threadIdx.x;
     for (int i = tid; i < n; i += (int)blockDim.x * (int)gridDim.x) {
@@ -236,12 +200,6 @@ __global__ void k_L_col(const real* A, const real* U, real* Lout, int n, int k) 
     }
 }
 
-
-/**
- * "Naivna" GPU LU faktorizacija (referenca za ispravnost): iterira k=0..n-1,
- * prvo izračuna U red k, zatim L kolonu k, uz sync nakon svakog koraka.
- * Paralelizacija je po elementima reda/kolone, ali zavisnosti između k koraka ostaju serijske.
- */
 void LU_naivna_gpu(const real* dA, real* dL, real* dU, int n) {
     int threads = 256;
     int blocks0 = (int)std::min<size_t>(65535, ((size_t)n * (size_t)n + threads - 1) / threads);
@@ -263,15 +221,10 @@ void LU_naivna_gpu(const real* dA, real* dL, real* dU, int n) {
 }
 
 
-
 // ============================================================================
 //                            CUBLAS BLOKOVSKA
 // ============================================================================
 
-/**
- * Konverzija matrice iz row-major (C/CUDA stil) u column-major (Fortran/cuBLAS stil)
- * praktično “transpose mapiranje” indeksa da bi cuBLAS mogao raditi direktno.
- */
 __global__ void k_rm_to_cm(const real* Arm, real* Acm, int n) {
     int idx = (int)blockIdx.x * (int)blockDim.x + (int)threadIdx.x;
     size_t total = (size_t)n * (size_t)n;
@@ -282,11 +235,6 @@ __global__ void k_rm_to_cm(const real* Arm, real* Acm, int n) {
     }
 }
 
-
-/**
- * Obrnuta konverzija: column-major -> row-major,
- * da L/U koje smo dobili u cuBLAS formatu vratimo u svoj standardni raspored.
- */
 __global__ void k_cm_to_rm(const real* Acm, real* Arm, int n) {
     int idx = (int)blockIdx.x * (int)blockDim.x + (int)threadIdx.x;
     size_t total = (size_t)n * (size_t)n;
@@ -297,50 +245,31 @@ __global__ void k_cm_to_rm(const real* Acm, real* Arm, int n) {
     }
 }
 
-
-/**
- * Faktorizuje dijagonalni blok (“panel”) A[kb:kb+bs, kb:kb+bs] in-place u column-major formatu (bez pivotiranja)
- * U se upisuje na/iznad dijagonale, L ispod dijagonale (dijagonala L je implicitno 1). Ovo je "sekvencijalni dio" blokovske LU.
- */
 __global__ void k_lu_panel_inplace_cm(real* A, int n, int kb, int bs) {
     int lda = n;
     int kend = kb + bs;
 
-    // serial kernel
     for (int k = kb; k < kend; ++k) {
-        // U(k, j) for j=k..kend-1
         for (int j = k; j < kend; ++j) {
             real sum = 0.0;
             for (int p = kb; p < k; ++p) {
-                // L(k,p) = A(p,k)  -> A[k*lda + p]?  (column-major: A[col*lda + row])
-                // We store L below diag: A(p, k) for p<k is in column k at row p => A[k*lda + p]
-                // But we need L(k,p): row k, col p => A[p*lda + k] (below diag stored in column p)
-                // U(p,j): row p, col j => A[j*lda + p]
                 sum += A[(size_t)p * lda + k] * A[(size_t)j * lda + p];
             }
-            A[(size_t)j * lda + k] = A[(size_t)j * lda + k] - sum; // U(k,j) at (row k, col j)
+            A[(size_t)j * lda + k] = A[(size_t)j * lda + k] - sum;
         }
 
-        real piv = A[(size_t)k * lda + k]; // U(k,k)
+        real piv = A[(size_t)k * lda + k];
 
-        // L(i,k) for i=k+1..kend-1, stored at (row i, col k) => A[k*lda + i]
         for (int i = k + 1; i < kend; ++i) {
             real sum = 0.0;
             for (int p = kb; p < k; ++p) {
-                // L(i,p): (row i, col p) => A[p*lda + i]
-                // U(p,k): (row p, col k) => A[k*lda + p]
                 sum += A[(size_t)p * lda + i] * A[(size_t)k * lda + p];
             }
-            A[(size_t)k * lda + i] = (A[(size_t)k * lda + i] - sum) / piv; // L(i,k)
+            A[(size_t)k * lda + i] = (A[(size_t)k * lda + i] - sum) / piv;
         }
     }
 }
 
-
-/**
- * Iz in-place matrice A (koja sadrži i L i U) izvlači dvije odvojene matrice L i U (obe column-major)
- * L dobija elemente ispod dijagonale + jedinice na dijagonali, U dobija dijagonalu i iznad dijagonale.
- */
 __global__ void k_extract_LU_cm(const real* A, real* L, real* U, int n) {
     int idx = (int)blockIdx.x * (int)blockDim.x + (int)threadIdx.x;
     size_t total = (size_t)n * (size_t)n;
@@ -349,25 +278,19 @@ __global__ void k_extract_LU_cm(const real* A, real* L, real* U, int n) {
         int row = (int)(t - (size_t)col * (size_t)n);
         real a = A[t];
 
-        if (row > col) {        // below diag
+        if (row > col) {
             L[t] = a;
             U[t] = 0.0;
-        } else if (row == col) { // diag
+        } else if (row == col) {
             L[t] = 1.0;
             U[t] = a;
-        } else {                // above diag
+        } else {
             L[t] = 0.0;
             U[t] = a;
         }
     }
 }
 
-
-/**
- * Pravi blokovski LU (bez pivotiranja) nad column-major matricom: za svaki blok radi (1) panel LU,
- * (2) TRSM za U12, (3) TRSM za L21, (4) GEMM Schur update A22 -= L21·U12. 
- * Ovo je dio koji daje ubrzanje (TRSM/GEMM su super optimizovani na GPU).
- */
 static void LU_cublas_blocked_cm_inplace(real* dA_cm, int n, int B, cublasHandle_t h) {
     int lda = n;
 
@@ -376,23 +299,20 @@ static void LU_cublas_blocked_cm_inplace(real* dA_cm, int n, int B, cublasHandle
         int kend = kb + bs;
         int trail = n - kend;
 
-        // factorize diagonal block (panel)
         k_lu_panel_inplace_cm<<<1, 1>>>(dA_cm, n, kb, bs);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
 
         if (trail <= 0) continue;
 
-        // submat pointers (column-major)
-        real* A11 = dA_cm + (size_t)kb   * lda + kb;     // bs x bs
-        real* A12 = dA_cm + (size_t)kend * lda + kb;     // bs x trail
-        real* A21 = dA_cm + (size_t)kb   * lda + kend;   // trail x bs
-        real* A22 = dA_cm + (size_t)kend * lda + kend;   // trail x trail
+        real* A11 = dA_cm + (size_t)kb   * lda + kb;
+        real* A12 = dA_cm + (size_t)kend * lda + kb;
+        real* A21 = dA_cm + (size_t)kb   * lda + kend;
+        real* A22 = dA_cm + (size_t)kend * lda + kend;
 
         const real one = 1.0;
         const real minus_one = -1.0;
 
-        // U12 = L11^{-1} * A12  (Left, Lower, NoTrans, Unit)
         checkCublasErrors(cublasDtrsm(
             h,
             CUBLAS_SIDE_LEFT,
@@ -405,7 +325,6 @@ static void LU_cublas_blocked_cm_inplace(real* dA_cm, int n, int B, cublasHandle
             A12, lda
         ));
 
-        // L21 = A21 * U11^{-1}  (Right, Upper, NoTrans, NonUnit)
         checkCublasErrors(cublasDtrsm(
             h,
             CUBLAS_SIDE_RIGHT,
@@ -418,7 +337,6 @@ static void LU_cublas_blocked_cm_inplace(real* dA_cm, int n, int B, cublasHandle
             A21, lda
         ));
 
-        // A22 -= L21 * U12
         checkCublasErrors(cublasDgemm(
             h,
             CUBLAS_OP_N, CUBLAS_OP_N,
@@ -434,18 +352,12 @@ static void LU_cublas_blocked_cm_inplace(real* dA_cm, int n, int B, cublasHandle
     }
 }
 
-
-/**
- * Javni wrapper za program: prima A u row-major, interno prebaci u column-major, uradi blokovski LU (cuBLAS),
- * ekstrahuje L/U, pa vrati L i U nazad u row-major. Kreira/uništava cuBLAS handle i privremene buffere.
- */
 void LU_cublas_blocked_rm(const real* dA_rm, real* dL_rm, real* dU_rm, int n, int B) {
     cublasHandle_t h;
     checkCublasErrors(cublasCreate(&h));
 
     size_t total = (size_t)n * (size_t)n;
 
-    // internal column-major buffers
     real *dA_cm = nullptr, *dL_cm = nullptr, *dU_cm = nullptr;
     checkCudaErrors(cudaMalloc(&dA_cm, sizeof(real) * total));
     checkCudaErrors(cudaMalloc(&dL_cm, sizeof(real) * total));
@@ -454,20 +366,16 @@ void LU_cublas_blocked_rm(const real* dA_rm, real* dL_rm, real* dU_rm, int n, in
     int threads = 256;
     int blocks = (int)std::min<size_t>(65535, (total + threads - 1) / threads);
 
-    // rm -> cm
     k_rm_to_cm<<<blocks, threads>>>(dA_rm, dA_cm, n);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
-    // LU in-place on column-major
     LU_cublas_blocked_cm_inplace(dA_cm, n, B, h);
 
-    // extract L_cm and U_cm
     k_extract_LU_cm<<<blocks, threads>>>(dA_cm, dL_cm, dU_cm, n);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
-    // cm -> rm outputs
     k_cm_to_rm<<<blocks, threads>>>(dL_cm, dL_rm, n);
     checkCudaErrors(cudaGetLastError());
     k_cm_to_rm<<<blocks, threads>>>(dU_cm, dU_rm, n);
@@ -481,16 +389,89 @@ void LU_cublas_blocked_rm(const real* dA_rm, real* dL_rm, real* dU_rm, int n, in
     checkCublasErrors(cublasDestroy(h));
 }
 
-
-/**
- * Adapter da funkcija ima isti potpis kao ostali "lu_func" (bez parametra B)
- * Koristi globalni gB da bi se lako mjerilo vrijeme istim timing helperom.
- */
 static int gB = 128;
 static void LU_cublas_blocked_rm_wrap(const real* dA, real* dL, real* dU, int n) {
     LU_cublas_blocked_rm(dA, dL, dU, n, gB);
 }
 
+
+// ============================================================================
+//                            cuSOLVER (getrf)
+// ============================================================================
+
+void LU_cusolver_getrf_rm(const real* dA_rm, real* dL_rm, real* dU_rm, int n) {
+    cusolverDnHandle_t sh;
+    checkCusolverErrors(cusolverDnCreate(&sh));
+
+    const int lda = n;
+    const size_t total = (size_t)n * (size_t)n;
+
+    real* dA_cm = nullptr;
+    real* dL_cm = nullptr;
+    real* dU_cm = nullptr;
+    checkCudaErrors(cudaMalloc(&dA_cm, sizeof(real) * total));
+    checkCudaErrors(cudaMalloc(&dL_cm, sizeof(real) * total));
+    checkCudaErrors(cudaMalloc(&dU_cm, sizeof(real) * total));
+
+    int threads = 256;
+    int blocks  = (int)std::min<size_t>(65535, (total + threads - 1) / threads);
+
+    k_rm_to_cm<<<blocks, threads>>>(dA_rm, dA_cm, n);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
+
+    int lwork = 0;
+    checkCusolverErrors(cusolverDnDgetrf_bufferSize(sh, n, n, dA_cm, lda, &lwork));
+
+    real* dWork = nullptr;
+    int*  dInfo = nullptr;
+    checkCudaErrors(cudaMalloc(&dWork, sizeof(real) * (size_t)lwork));
+    checkCudaErrors(cudaMalloc(&dInfo, sizeof(int)));
+
+    // NOTE: PivotArray = nullptr => bez pivotiranja
+    checkCusolverErrors(cusolverDnDgetrf(
+        sh, n, n,
+        dA_cm, lda,
+        dWork,
+        nullptr,
+        dInfo
+    ));
+    checkCudaErrors(cudaDeviceSynchronize());
+
+    int hInfo = -999;
+    checkCudaErrors(cudaMemcpy(&hInfo, dInfo, sizeof(int), cudaMemcpyDeviceToHost));
+    if (hInfo != 0) {
+        std::cerr << "cusolverDnDgetrf failed, info=" << hInfo << "\n";
+        std::exit(EXIT_FAILURE);
+    }
+
+    k_extract_LU_cm<<<blocks, threads>>>(dA_cm, dL_cm, dU_cm, n);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
+
+    k_cm_to_rm<<<blocks, threads>>>(dL_cm, dL_rm, n);
+    checkCudaErrors(cudaGetLastError());
+    k_cm_to_rm<<<blocks, threads>>>(dU_cm, dU_rm, n);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
+
+    checkCudaErrors(cudaFree(dA_cm));
+    checkCudaErrors(cudaFree(dL_cm));
+    checkCudaErrors(cudaFree(dU_cm));
+    checkCudaErrors(cudaFree(dWork));
+    checkCudaErrors(cudaFree(dInfo));
+
+    checkCusolverErrors(cusolverDnDestroy(sh));
+}
+
+static void LU_cusolver_getrf_rm_wrap(const real* dA, real* dL, real* dU, int n) {
+    LU_cusolver_getrf_rm(dA, dL, dU, n);
+}
+
+
+// ============================================================================
+//                       RUN HELPER + MAIN
+// ============================================================================
 
 static void run_one(const char* name,
                     void (*fn)(const real*, real*, real*, int),
@@ -501,46 +482,75 @@ static void run_one(const char* name,
     printf("%-20s time_ms = %12.3f  max|A-LU| = % .3e\n", name, out_ms, out_err);
 }
 
-
-
-// ============================================================================
-//                  MAIN: run NAIVE + CUBLAS
-// ============================================================================
 int main(int argc, char** argv) {
-    int n = 8192;
-    if (argc > 1) n = std::atoi(argv[1]);
     int B = 128;
-    if (argc > 2) B = std::atoi(argv[2]);
+    if (argc > 1) B = std::atoi(argv[1]);
     gB = B;
 
-    std::vector<real> hA = make_test_matrix(n);
+    // test sizes
+    const int Ns[] = {512, 1024, 2048, 4096, 8192, 16384};
+    const int numN = (int)(sizeof(Ns) / sizeof(Ns[0]));
 
-    real *dA=nullptr, *dL=nullptr, *dU=nullptr;
-    size_t total = (size_t)n * (size_t)n;
-    checkCudaErrors(cudaMalloc(&dA, sizeof(real) * total));
-    checkCudaErrors(cudaMalloc(&dL, sizeof(real) * total));
-    checkCudaErrors(cudaMalloc(&dU, sizeof(real) * total));
-    checkCudaErrors(cudaMemcpy(dA, hA.data(), sizeof(real) * total, cudaMemcpyHostToDevice));
+    printf("Benchmark LU: moja (cuBLAS blocked, B=%d) vs cuSOLVER getrf\n", B);
+    printf("--------------------------------------------------------------------------\n");
+    printf("%8s  %14s  %14s  %14s  %12s  %12s\n",
+           "n", "ms_moja", "ms_cuSOLVER", "pct_slower", "err_moja", "err_solv");
+    printf("--------------------------------------------------------------------------\n");
 
-    printf("n=%d (B=%d)\n", n, B);
+    for (int t = 0; t < numN; ++t) {
+        int n = Ns[t];
+        size_t total = (size_t)n * (size_t)n;
 
-    float  ms_naive = 0.0f, ms_cublas = 0.0f;
-    double err_naive = 0.0,  err_cublas = 0.0;
+        // Host matrix
+        std::vector<real> hA = make_test_matrix(n);
 
-    run_one("LU_naivna_gpu",          LU_naivna_gpu,            dA, dL, dU, n, ms_naive,  err_naive);
-    run_one("LU_cublas_blocked",      LU_cublas_blocked_rm_wrap, dA, dL, dU, n, ms_cublas, err_cublas);
+        // Device buffers
+        real *dA = nullptr, *dL = nullptr, *dU = nullptr;
 
-    // speedup (only meaningful if both correct)
-    const double tol = 1e-9;
-    if (err_naive < tol && err_cublas < tol && ms_cublas > 0.0f) {
-        double s = (double)ms_naive / (double)ms_cublas;
-        printf("speedup (cuBLAS vs naive): %.3fx\n", s);
-    } else {
-        printf("speedup (cuBLAS vs naive): skip (err too big or ms=0)\n");
+        // Try allocate; if fails, skip this n
+        cudaError_t stA = cudaMalloc(&dA, sizeof(real) * total);
+        cudaError_t stL = cudaMalloc(&dL, sizeof(real) * total);
+        cudaError_t stU = cudaMalloc(&dU, sizeof(real) * total);
+
+        if (stA != cudaSuccess || stL != cudaSuccess || stU != cudaSuccess) {
+            if (dA) cudaFree(dA);
+            if (dL) cudaFree(dL);
+            if (dU) cudaFree(dU);
+            printf("%8d  %14s  %14s  %14s  %12s  %12s\n",
+                   n, "SKIP", "SKIP", "SKIP", "SKIP", "SKIP");
+            continue;
+        }
+
+        checkCudaErrors(cudaMemcpy(dA, hA.data(), sizeof(real) * total, cudaMemcpyHostToDevice));
+
+        // Warmup (opcionalno ali preporučeno)
+        {
+            float ms_w = 0.0f; double err_w = 0.0;
+            run_one("warm_moja",     LU_cublas_blocked_rm_wrap, dA, dL, dU, n, ms_w, err_w);
+            run_one("warm_cusolver", LU_cusolver_getrf_rm_wrap, dA, dL, dU, n, ms_w, err_w);
+        }
+
+        // Real runs (mjerenje)
+        float  ms_moja = 0.0f, ms_solv = 0.0f;
+        double err_moja = 0.0, err_solv = 0.0;
+
+        run_one("LU_cublas_blocked", LU_cublas_blocked_rm_wrap, dA, dL, dU, n, ms_moja, err_moja);
+        run_one("LU_cusolver_getrf", LU_cusolver_getrf_rm_wrap, dA, dL, dU, n, ms_solv, err_solv);
+
+        // percent slower relative to cuSOLVER
+        double pct = 0.0;
+        if (ms_solv > 0.0f) pct = ((double)ms_moja - (double)ms_solv) / (double)ms_solv * 100.0;
+
+        printf("%8d  %14.3f  %14.3f  %13.2f%%  %12.3e  %12.3e\n",
+               n, ms_moja, ms_solv, pct, err_moja, err_solv);
+
+        checkCudaErrors(cudaFree(dA));
+        checkCudaErrors(cudaFree(dL));
+        checkCudaErrors(cudaFree(dU));
     }
 
-    checkCudaErrors(cudaFree(dA));
-    checkCudaErrors(cudaFree(dL));
-    checkCudaErrors(cudaFree(dU));
+    printf("--------------------------------------------------------------------------\n");
+    printf("pct_slower > 0 => moja sporija; pct_slower < 0 => moja brza\n");
+
     return 0;
 }
