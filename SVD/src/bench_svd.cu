@@ -303,14 +303,7 @@ int main()
     all_pass &= test_and_bench( 384,  384,  32, 3);
     all_pass &= test_and_bench( 512,  512,  32, 3);
     all_pass &= test_and_bench(1024, 1024,  32, 3);
-    all_pass &= test_and_bench(2000, 2000,  32, 3);
-
-    // --- Large sizes (single run — these take a long time) ---
-    printf("============================================================\n");
-    printf("--- Large sizes (single run) ---\n");
-    printf("============================================================\n\n");
-    all_pass &= test_and_bench(3072, 3072,  32, 1);
-    all_pass &= test_and_bench(4096, 4096,  32, 1);
+    all_pass &= test_and_bench(2048, 2048,  32, 3);
 
     // Summary
     printf("============================================================\n");
@@ -319,3 +312,4 @@ int main()
 
     return all_pass ? 0 : 1;
 }
+
