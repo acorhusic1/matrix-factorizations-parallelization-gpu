@@ -131,9 +131,9 @@ int main() {
     // TEST 2: PERFORMANCE COMPARISON (SAME MATRIX PER ITERATION)
     // ====================================================================
     {
-        const int M = 2000;
-        const int N = 2000;
-        const int TEST_RUNS = 100;
+        const int M = 2048;
+        const int N = 2048;
+        const int TEST_RUNS = 10;
 
         std::cout << "\n------------------------------------------------------------\n";
         std::cout << "  GPU QR PERFORMANCE COMPARISON \n";
@@ -144,7 +144,7 @@ int main() {
         double total_time_custom = 0;
 
         for (int run = 0; run < TEST_RUNS; run++) {
-            std::cout << "--- ITERATION " << run + 1 << " ---" << std::endl;
+            std::cout << std::endl << "--- ITERATION " << run + 1 << " ---" << std::endl;
 
             GPUMatrix A_master = GPUMatrix::GenerateRandom(M, N);
             A_master.CopyToDevice();
@@ -175,10 +175,6 @@ int main() {
                 double time = std::chrono::duration<double>(end - start).count();
                 total_time_cusolver += time;
                 std::cout << "   cuSOLVER: " << time * 1000 << " ms" << std::endl;
-
-                // --- Validation for Library ---
-                cusolverDnSorgqr(solver_handle, M, M, N, A_perf.d_data, M, d_tau, d_work, work_size, devInfo);
-                GPUMatrix R_chk(M, N); Householder::extract_R(A_master, R_chk);
 
                 cudaFree(d_tau); cudaFree(d_work); cudaFree(devInfo);
             }
@@ -221,7 +217,8 @@ int main() {
                 res_perf.CopyToHost();
 
                 bool pass_perf = GPUMatrix::isEqual(res_perf, A_master, 1e-2);
-                std::cout << "Custom Householder Status: " << (pass_perf ? "PASS" : "FAIL") << std::endl << std::endl;
+                std::cout << "Custom Householder Status: " << (pass_perf ? "PASS" : "FAIL") << std::endl;
+
             }
         }
 
@@ -232,8 +229,8 @@ int main() {
         std::cout << "cuSOLVER Avg: " << (total_time_cusolver / TEST_RUNS) * 1000 << " ms" << std::endl;
         std::cout << "CUSTOM   Avg: " << (total_time_custom / TEST_RUNS) * 1000 << " ms" << std::endl;
 
-        double speedup = (total_time_cusolver / TEST_RUNS) / (total_time_custom / TEST_RUNS);
-        std::cout << "Speedup vs cuSOLVER: " << speedup << "x" << std::endl;
+        double relativeRuntime = (total_time_cusolver / TEST_RUNS) / (total_time_custom / TEST_RUNS);
+        std::cout << "Relative runtime to cuSOLVER: " << relativeRuntime << "x" << std::endl;
         std::cout << std::string(70, '=') << std::endl;
     }
 

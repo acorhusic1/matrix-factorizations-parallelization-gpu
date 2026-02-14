@@ -3,10 +3,7 @@
 #include <cmath>
 #include <algorithm>
 
-// ============================================================================
-// TUNING CONSTANTS - VECTORIZED
-// ============================================================================
-#define BLOCK_SIZE 256
+// CONSTANTS
 #define EPSILON 1e-10f
 
 // GEMM TUNING
@@ -67,11 +64,7 @@ namespace Householder {
     // VECTORIZED GEMM KERNELS
     // ============================================================================
 
-    /*
-     * VECTORIZED NN GEMM: C = alpha * A * B + beta * C
-     * Uses float4 to load data.
-     * Requires M, K, lda, ldb, ldc to be multiples of 4 (Safe for 2000x2000 and 64 blocks)
-     */
+    // VECTORIZED NN GEMM
     __global__
         void kernel_gemm_nn_vec(int M, int N, int K, float alpha,
             const float* __restrict__ A, int lda,
@@ -83,7 +76,7 @@ namespace Householder {
         const int bx = blockIdx.x;
         const int by = blockIdx.y;
         const int tx = threadIdx.x;
-        const int ty = threadIdx.y; // Assumed 1D block (256, 1) usually, but we map linearly
+        const int ty = threadIdx.y;
 
         const int tid = threadIdx.x; // 0..255
 
@@ -96,41 +89,11 @@ namespace Householder {
         float reg_a[GEMM_TM]; // 8 regs
         float reg_b[GEMM_TN]; // 4 regs
 
-        // Thread Mapping for Compute
-        // We compute 64x64 tile. 256 threads.
-        // Each thread computes 4x4? No. 64x64 = 4096 pixels. 256 threads. 4096/256 = 16 pixels per thread.
-        // Let's map threads to 8x4 pixels (32 pixels)? No, that's too many.
-        // Let's stick to TM=4, TN=4 (16 pixels) but use vector loads for fetch.
-        // Re-mapping: 
-        // GEMM_TM 4, GEMM_TN 4.
-        // row_c = (tid / 16) * 4
-        // col_c = (tid % 16) * 4
-
         const int ty_c = tid / 16; // 0..15
         const int tx_c = tid % 16; // 0..15
 
-        // Pivot A and B loading.
-        // We need to load 64x16 floats = 1024 floats per tile.
-        // 256 threads. Each thread loads 4 floats. Perfect for float4.
-
-        // A Loading: Load 64x16 tile (Col-Major A). 
-        // We want to store into As[16][64] (Transposed for conflict free access)
-        // Global A: We need rows 0..63, cols k..k+15.
-        // Load as float4 from A. 
-        // tid 0..255. 
-        // 4 rows per float4? No, A is col major. Contiguous in M (rows).
-        // So float4 loads 4 contiguous rows.
-        // We have 64 rows. 64/4 = 16 float4s down. 16 cols wide. Total 16*16 = 256 float4s.
-        // Exactly 1 per thread.
-
         int load_a_row = (tid % 16) * 4;
         int load_a_col = tid / 16;
-
-        // B Loading: Load 16x64 tile (Col-Major B).
-        // We need rows k..k+15, cols 0..63.
-        // B is col major. Float4 loads 4 rows.
-        // We have 16 rows. 16/4 = 4 float4s down. 64 cols wide. Total 4*64 = 256 float4s.
-        // Exactly 1 per thread.
 
         int load_b_row = (tid % 4) * 4;
         int load_b_col = tid / 4;
@@ -144,7 +107,6 @@ namespace Householder {
         for (int k = 0; k < K; k += GEMM_BK) {
 
             // 1. Vector Load A (A is M x K)
-            // We want A[row..row+3][k+col]
             if (by * GEMM_BM + load_a_row < M && k + load_a_col < K) {
                 ldg_a = *reinterpret_cast<const float4*>(&A_ptr[(k + load_a_col) * lda + load_a_row]);
                 As[load_a_col][load_a_row + 0] = ldg_a.x;
@@ -160,7 +122,6 @@ namespace Householder {
             }
 
             // 2. Vector Load B (B is K x N)
-            // We want B[k+row..k+row+3][col]
             if (k + load_b_row < K && bx * GEMM_BN + load_b_col < N) {
                 ldg_b = *reinterpret_cast<const float4*>(&B_ptr[load_b_col * ldb + k + load_b_row]);
                 Bs[load_b_row + 0][load_b_col] = ldg_b.x;
@@ -178,7 +139,6 @@ namespace Householder {
             __syncthreads();
 
             // 3. Compute (4x4 tiles per thread)
-            // Re-use logic: ty_c * 4 is row start, tx_c * 4 is col start
 #pragma unroll
             for (int bk = 0; bk < GEMM_BK; ++bk) {
 #pragma unroll
@@ -219,12 +179,7 @@ namespace Householder {
         }
     }
 
-    /*
-     * VECTORIZED TN GEMM: C = alpha * A^T * B + beta * C
-     * Critical for QR (W = V^T * C)
-     * A is (K x M) col major. Access as A^T (M x K).
-     * M is block size (64). K is M_sub.
-     */
+    // VECTORIZED TN GEMM
     __global__
         void kernel_gemm_tn_vec(int M, int N, int K, float alpha,
             const float* __restrict__ A, int lda,
@@ -249,46 +204,24 @@ namespace Householder {
         const int ty_c = tid / 16;
         const int tx_c = tid % 16;
 
-        // Loading A (which is V, K x M).
-        // We need tile of A^T: rows 0..63, cols k..k+15.
-        // This maps to A: cols 0..63, rows k..k+15.
-        // A is Col-Major. So rows are contiguous.
-        // We load from A[k..k+15][0..63].
-        // 16 rows x 64 cols = 1024 floats.
-        // 256 threads. Each loads 4 floats (1 float4).
-        // load_a_row (in A) = tid % 4 (times 4) -> 0..12.
-        // load_a_col (in A) = tid / 4 -> 0..63.
-
         int load_a_row_A = (tid % 4) * 4;
         int load_a_col_A = tid / 4;
 
-        // Loading B (K x N). Standard.
         int load_b_row = (tid % 4) * 4;
         int load_b_col = tid / 4;
 
-        const float* A_ptr = A; // A is not tiled by block Y because M is small (usually 1 block)
+        const float* A_ptr = A;
         const float* B_ptr = B + bx * GEMM_BN * ldb;
 
         float4 ldg_a, ldg_b;
 
         for (int k = 0; k < K; k += GEMM_BK) {
-
-            // Load A (V).
-            // Global: A[col][row].
-            // We want A[load_a_col_A][k + load_a_row_A]
-            // wait, A_ptr + load_a_col_A * lda + k + load_a_row_A
-            int global_A_col = by * GEMM_BM + load_a_col_A; // usually by=0
+            int global_A_col = by * GEMM_BM + load_a_col_A;
             int global_A_row = k + load_a_row_A;
 
             if (global_A_col < M && global_A_row < K) {
-                // Address: (col * lda + row)
                 ldg_a = *reinterpret_cast<const float4*>(&A_ptr[global_A_col * lda + global_A_row]);
-                // Store into As[k_local][row_local] (Transposed for compute)
-                // We loaded 4 rows of A.
-                // As expects A^T part. A^T(row, k).
-                // So As[k][row].
-                // We loaded A(row, col).
-                // So we store As[load_a_row_A][load_a_col_A].
+
                 As[load_a_row_A + 0][load_a_col_A] = ldg_a.x;
                 As[load_a_row_A + 1][load_a_col_A] = ldg_a.y;
                 As[load_a_row_A + 2][load_a_col_A] = ldg_a.z;
@@ -360,7 +293,7 @@ namespace Householder {
 
 
     // ============================================================================
-    // QR KERNELS (Cleaned)
+    // QR KERNELS
     // ============================================================================
 
     __global__
@@ -606,6 +539,8 @@ namespace Householder {
 
         if (block_size <= 0) block_size = compute_optimal_block_size(m, n);
         else block_size = std::min(block_size, min_dim);
+
+	//	std::cout << "   Block size: " << block_size << std::endl;
 
         h_tau.resize(min_dim);
         init_resources();
